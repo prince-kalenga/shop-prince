@@ -2,7 +2,7 @@
 """
 Application Web de Gestion de Shop PRINCE
 Framework: Streamlit
-Base de données: Supabase (PostgreSQL)
+Base de données: Supabase (PostgreSQL - Connection Pooler IPv4)
 """
 
 import streamlit as st
@@ -160,7 +160,13 @@ if menu == "🏠 Tableau de bord":
         net_rows = []
 
         for inv in invs:
-            res = calc_network(inv['stock_initial'], inv['units_in'], inv['unit_buy_price'], inv['unit_sell_price'], inv['stock_final'])
+            s_init = float(inv['stock_initial'] or 0)
+            u_in = float(inv['units_in'] or 0)
+            p_buy = float(inv['unit_buy_price'] or 0)
+            p_sell = float(inv['unit_sell_price'] or 0)
+            s_final = float(inv['stock_final'] or 0)
+
+            res = calc_network(s_init, u_in, p_buy, p_sell, s_final)
             tot_rev += res['revenue']
             tot_cost += res['cost']
             tot_profit += res['profit']
@@ -171,11 +177,11 @@ if menu == "🏠 Tableau de bord":
                 "Recettes (FC)": f"{res['revenue']:,.0f}",
                 "Coût Achat (FC)": f"{res['cost']:,.0f}",
                 "Bénéfice (FC)": f"{res['profit']:,.0f}",
-                "Stock Restant": f"{inv['stock_final']:,.0f}"
+                "Stock Restant": f"{s_final:,.0f}"
             })
 
-        cash_avail = last_day['cash'] + last_day['airtel_money'] + last_day['mpesa'] + last_day['orange_money']
-        debt_status = (last_day['initial_debt'] + last_day['new_debts']) - last_day['repayments']
+        cash_avail = float(last_day['cash'] or 0) + float(last_day['airtel_money'] or 0) + float(last_day['mpesa'] or 0) + float(last_day['orange_money'] or 0)
+        debt_status = (float(last_day['initial_debt'] or 0) + float(last_day['new_debts'] or 0)) - float(last_day['repayments'] or 0)
         total_capital = tot_stock_buy + tot_rev + cash_avail
         net_sit = (cash_avail + tot_stock_buy) - debt_status
 
@@ -189,7 +195,7 @@ if menu == "🏠 Tableau de bord":
         c5.metric("Total Capital Roulement", f"{total_capital:,.0f} FC")
         c6.metric("Dette Restante", f"{debt_status:,.0f} FC")
         c7.metric("Situation Nette", f"{net_sit:,.0f} FC")
-        c8.metric("Dépenses Shop", f"{last_day['shop_expenses']:,.0f} FC")
+        c8.metric("Dépenses Shop", f"{float(last_day['shop_expenses'] or 0):,.0f} FC")
 
         st.subheader("Bilan par Réseau")
         st.dataframe(pd.DataFrame(net_rows), use_container_width=True)
@@ -218,7 +224,10 @@ elif menu == "📦 Inventaire":
             target_date_str = st.selectbox("Sélectionner la date à modifier :", dates_list)
             cursor.execute("SELECT * FROM days WHERE date = %s;", (target_date_str,))
             day_data = cursor.fetchone()
-            selected_date = datetime.datetime.strptime(day_data['date'], "%Y-%m-%d").date()
+            try:
+                selected_date = datetime.datetime.strptime(day_data['date'], "%Y-%m-%d").date()
+            except ValueError:
+                selected_date = datetime.date.today()
         else:
             st.warning("Aucun inventaire en base.")
 
@@ -226,13 +235,13 @@ elif menu == "📦 Inventaire":
         st.subheader("1. Informations Générales")
         col_date, col_cap, col_expenses = st.columns(3)
         inv_date = col_date.date_input("Date", selected_date)
-        own_cap = col_cap.number_input("Capital Propre Int.", value=float(day_data['own_capital']) if day_data else 0.0)
-        expenses = col_expenses.number_input("Dépenses Shop", value=float(day_data['shop_expenses']) if day_data else 0.0)
+        own_cap = col_cap.number_input("Capital Propre Int.", value=float(day_data['own_capital']) if day_data and day_data['own_capital'] is not None else 0.0)
+        expenses = col_expenses.number_input("Dépenses Shop", value=float(day_data['shop_expenses']) if day_data and day_data['shop_expenses'] is not None else 0.0)
 
         col_d1, col_d2, col_d3 = st.columns(3)
-        init_debt = col_d1.number_input("Dette Initiale", value=float(day_data['initial_debt']) if day_data else 0.0)
-        new_debts = col_d2.number_input("Nouvelles Dettes", value=float(day_data['new_debts']) if day_data else 0.0)
-        repayments = col_d3.number_input("Remboursements", value=float(day_data['repayments']) if day_data else 0.0)
+        init_debt = col_d1.number_input("Dette Initiale", value=float(day_data['initial_debt']) if day_data and day_data['initial_debt'] is not None else 0.0)
+        new_debts = col_d2.number_input("Nouvelles Dettes", value=float(day_data['new_debts']) if day_data and day_data['new_debts'] is not None else 0.0)
+        repayments = col_d3.number_input("Remboursements", value=float(day_data['repayments']) if day_data and day_data['repayments'] is not None else 0.0)
 
         obs = st.text_input("Observation", value=day_data['observation'] if day_data and day_data['observation'] else "")
 
@@ -247,20 +256,20 @@ elif menu == "📦 Inventaire":
                 inv_net = cursor.fetchone()
 
             c1, c2, c3, c4, c5 = st.columns(5)
-            s_init = c1.number_input(f"Stock Init ({net_name})", value=float(inv_net['stock_initial']) if inv_net else 0.0)
-            u_in = c2.number_input(f"Entrées ({net_name})", value=float(inv_net['units_in']) if inv_net else 0.0)
-            p_buy = c3.number_input(f"Prix Achat U. ({net_name})", value=float(inv_net['unit_buy_price']) if inv_net else 0.0)
-            p_sell = c4.number_input(f"Prix Vente U. ({net_name})", value=float(inv_net['unit_sell_price']) if inv_net else 0.0)
-            s_final = c5.number_input(f"Stock Restant ({net_name})", value=float(inv_net['stock_final']) if inv_net else 0.0)
+            s_init = c1.number_input(f"Stock Init ({net_name})", value=float(inv_net['stock_initial']) if inv_net and inv_net['stock_initial'] is not None else 0.0)
+            u_in = c2.number_input(f"Entrées ({net_name})", value=float(inv_net['units_in']) if inv_net and inv_net['units_in'] is not None else 0.0)
+            p_buy = c3.number_input(f"Prix Achat U. ({net_name})", value=float(inv_net['unit_buy_price']) if inv_net and inv_net['unit_buy_price'] is not None else 0.0)
+            p_sell = c4.number_input(f"Prix Vente U. ({net_name})", value=float(inv_net['unit_sell_price']) if inv_net and inv_net['unit_sell_price'] is not None else 0.0)
+            s_final = c5.number_input(f"Stock Restant ({net_name})", value=float(inv_net['stock_final']) if inv_net and inv_net['stock_final'] is not None else 0.0)
 
             net_inputs[net_name] = (s_init, u_in, p_buy, p_sell, s_final)
 
         st.subheader("3. Argent disponible en fin de journée")
         c_cash, c_airtel, c_mpesa, c_orange = st.columns(4)
-        cash = c_cash.number_input("Espèces (Caisse)", value=float(day_data['cash']) if day_data else 0.0)
-        airtel_m = c_airtel.number_input("Airtel Money", value=float(day_data['airtel_money']) if day_data else 0.0)
-        mpesa = c_mpesa.number_input("M-Pesa", value=float(day_data['mpesa']) if day_data else 0.0)
-        orange_m = c_orange.number_input("Orange Money", value=float(day_data['orange_money']) if day_data else 0.0)
+        cash = c_cash.number_input("Espèces (Caisse)", value=float(day_data['cash']) if day_data and day_data['cash'] is not None else 0.0)
+        airtel_m = c_airtel.number_input("Airtel Money", value=float(day_data['airtel_money']) if day_data and day_data['airtel_money'] is not None else 0.0)
+        mpesa = c_mpesa.number_input("M-Pesa", value=float(day_data['mpesa']) if day_data and day_data['mpesa'] is not None else 0.0)
+        orange_m = c_orange.number_input("Orange Money", value=float(day_data['orange_money']) if day_data and day_data['orange_money'] is not None else 0.0)
 
         submit = st.form_submit_button("💾 Enregistrer dans Supabase")
 
@@ -332,7 +341,7 @@ elif menu == "💰 Transactions":
     st.dataframe(df_trans, use_container_width=True)
 
 # ---------------------------------------------------------
-# 4. DETTES (AVEC MODIFICATION)
+# 4. DETTES
 # ---------------------------------------------------------
 elif menu == "💳 Dettes":
     st.header("Gestion des Dettes & Remboursements")
@@ -355,9 +364,14 @@ elif menu == "💳 Dettes":
                 debt_row = match.iloc[0]
 
         with st.form("debt_form"):
-            d_date = st.date_input("Date", datetime.datetime.strptime(debt_row['date'], "%Y-%m-%d").date() if debt_row else datetime.date.today())
+            try:
+                default_date = datetime.datetime.strptime(str(debt_row['date']), "%Y-%m-%d").date() if debt_row else datetime.date.today()
+            except ValueError:
+                default_date = datetime.date.today()
+
+            d_date = st.date_input("Date", default_date)
             d_type = st.selectbox("Type", ["Nouvelle dette", "Remboursement"], index=0 if not debt_row or debt_row['type'] == "Nouvelle dette" else 1)
-            d_amount = st.number_input("Montant (FC)", value=float(debt_row['Montant (FC)']) if debt_row else 0.0)
+            d_amount = st.number_input("Montant (FC)", value=float(debt_row['Montant (FC)']) if debt_row and debt_row['Montant (FC)'] is not None else 0.0)
             d_note = st.text_input("Note", value=debt_row['Note'] if debt_row and debt_row['Note'] else "")
 
             submit_debt = st.form_submit_button("💾 Enregistrer")
@@ -383,7 +397,7 @@ elif menu == "💳 Dettes":
         st.dataframe(df_debts, use_container_width=True)
 
 # ---------------------------------------------------------
-# 5. HISTORIQUE & EXPORT
+# 5. HISTORIQUE & EXPORT (NETTOYÉ ET CORRIGÉ)
 # ---------------------------------------------------------
 elif menu == "📊 Historique & Export":
     st.header("Historique Global & Graphiques")
@@ -393,14 +407,36 @@ elif menu == "📊 Historique & Export":
     conn.close()
 
     if not df_days.empty:
+        # Filtrer pour retirer d'éventuelles lignes d'en-tête parasites ("id", "date")
+        df_days = df_days[df_days['date'] != 'date'].copy()
+
+        # Liste des colonnes financières
+        numeric_cols = ['own_capital', 'initial_debt', 'new_debts', 'repayments', 
+                        'capital_additions', 'shop_expenses', 'cash', 'airtel_money', 'mpesa', 'orange_money']
+
+        # Conversion forcée en nombres (float)
+        for col in numeric_cols:
+            if col in df_days.columns:
+                df_days[col] = pd.to_numeric(df_days[col], errors='coerce').fillna(0.0)
+
+        # Graphique
         st.subheader("Graphique des Espèces & Capital")
-        st.line_chart(df_days.set_index("date")[["cash", "own_capital", "shop_expenses"]])
+        chart_data = df_days.set_index("date")[["cash", "own_capital", "shop_expenses"]]
+        st.line_chart(chart_data)
 
+        # Tableau propre
         st.subheader("Données Consolidées")
-        st.dataframe(df_days, use_container_width=True)
+        formatted_df = df_days.copy()
+        for col in numeric_cols:
+            formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:,.0f} FC")
 
+        st.dataframe(formatted_df, use_container_width=True)
+
+        # Bouton d'exportation CSV
         csv_data = df_days.to_csv(index=False).encode('utf-8')
         st.download_button("📝 Télécharger l'historique en CSV", csv_data, "historique_shop.csv", "text/csv")
+    else:
+        st.info("Aucune donnée disponible dans l'historique.")
 
 # ---------------------------------------------------------
 # 6. PARAMÈTRES
