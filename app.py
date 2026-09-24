@@ -2,17 +2,17 @@
 """
 Application Web de Gestion de Shop PRINCE
 Framework: Streamlit
-Base de données: SQLite3
+Base de données: Supabase (PostgreSQL)
 """
 
 import streamlit as st
 import pandas as pd
 import datetime
-import sqlite3
-import os
+import psycopg2
+import psycopg2.extras
 
 # ---------------------------------------------------------
-# CONFIGURATION & BASE DE DONNÉES
+# CONFIGURATION DE LA PAGE
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Shop PRINCE - Gestion Web",
@@ -20,84 +20,101 @@ st.set_page_config(
     layout="wide"
 )
 
-DB_PATH = "shop_prince.db"
-
+# ---------------------------------------------------------
+# CONNEXION BASE DE DONNÉES (SUPABASE POSTGRESQL)
+# ---------------------------------------------------------
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = psycopg2.connect(
+            host=st.secrets["postgres"]["host"],
+            port=st.secrets["postgres"]["port"],
+            dbname=st.secrets["postgres"]["dbname"],
+            user=st.secrets["postgres"]["user"],
+            password=st.secrets["postgres"]["password"],
+            cursor_factory=psycopg2.extras.RealDictCursor
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Erreur de connexion à la base de données : {e}")
+        st.stop()
 
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
+    # Table des journées
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS days (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT UNIQUE,
-            own_capital REAL,
-            initial_debt REAL,
-            new_debts REAL,
-            repayments REAL,
-            capital_additions REAL,
-            shop_expenses REAL,
-            cash REAL,
-            airtel_money REAL,
-            mpesa REAL,
-            orange_money REAL,
+            id SERIAL PRIMARY KEY,
+            date VARCHAR(20) UNIQUE NOT NULL,
+            own_capital REAL DEFAULT 0,
+            initial_debt REAL DEFAULT 0,
+            new_debts REAL DEFAULT 0,
+            repayments REAL DEFAULT 0,
+            capital_additions REAL DEFAULT 0,
+            shop_expenses REAL DEFAULT 0,
+            cash REAL DEFAULT 0,
+            airtel_money REAL DEFAULT 0,
+            mpesa REAL DEFAULT 0,
+            orange_money REAL DEFAULT 0,
             observation TEXT
-        )
+        );
     """)
 
+    # Table de l'inventaire
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            day_id INTEGER,
-            network_name TEXT,
-            stock_initial REAL,
-            units_in REAL,
-            unit_buy_price REAL,
-            unit_sell_price REAL,
-            stock_final REAL,
-            FOREIGN KEY (day_id) REFERENCES days (id)
-        )
+            id SERIAL PRIMARY KEY,
+            day_id INTEGER REFERENCES days(id) ON DELETE CASCADE,
+            network_name VARCHAR(50),
+            stock_initial REAL DEFAULT 0,
+            units_in REAL DEFAULT 0,
+            unit_buy_price REAL DEFAULT 0,
+            unit_sell_price REAL DEFAULT 0,
+            stock_final REAL DEFAULT 0
+        );
     """)
 
+    # Table des transactions
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            type TEXT,
-            source_target TEXT,
-            amount REAL,
+            id SERIAL PRIMARY KEY,
+            date VARCHAR(20),
+            type VARCHAR(50),
+            source_target VARCHAR(50),
+            amount REAL DEFAULT 0,
             note TEXT
-        )
+        );
     """)
 
+    # Table des dettes
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS debts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            type TEXT,
-            amount REAL,
+            id SERIAL PRIMARY KEY,
+            date VARCHAR(20),
+            type VARCHAR(50),
+            amount REAL DEFAULT 0,
             note TEXT
-        )
+        );
     """)
 
+    # Table des paramètres
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
+            key VARCHAR(50) PRIMARY KEY,
             value REAL
-        )
+        );
     """)
 
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('pct_savings', 50.0)")
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('pct_reinvest', 25.0)")
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('pct_allowance', 25.0)")
+    cursor.execute("INSERT INTO settings (key, value) VALUES ('pct_savings', 50.0) ON CONFLICT (key) DO NOTHING;")
+    cursor.execute("INSERT INTO settings (key, value) VALUES ('pct_reinvest', 25.0) ON CONFLICT (key) DO NOTHING;")
+    cursor.execute("INSERT INTO settings (key, value) VALUES ('pct_allowance', 25.0) ON CONFLICT (key) DO NOTHING;")
 
     conn.commit()
+    cursor.close()
     conn.close()
 
+# Initialisation de la structure au premier démarrage
 init_db()
 
 # ---------------------------------------------------------
@@ -115,7 +132,7 @@ def calc_network(s_init, u_in, p_buy, p_sell, s_final):
 # BARRE LATÉRALE / NAVIGATION
 # ---------------------------------------------------------
 st.sidebar.title("SHOP PRINCE 📱")
-st.sidebar.caption("Gestion de Shop Mobile Money & Recharge")
+st.sidebar.caption("Gestion Web - Base de Données Cloud")
 
 menu = st.sidebar.radio(
     "Navigation", 
@@ -130,13 +147,13 @@ if menu == "🏠 Tableau de bord":
 
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM days ORDER BY date DESC LIMIT 1")
+    cursor.execute("SELECT * FROM days ORDER BY date DESC LIMIT 1;")
     last_day = cursor.fetchone()
 
     if not last_day:
-        st.info("Aucune donnée enregistrée pour le moment. Allez dans la section 'Inventaire' pour débuter.")
+        st.info("Aucune donnée enregistrée dans Supabase. Rendez-vous dans 'Inventaire' pour créer la première entrée.")
     else:
-        cursor.execute("SELECT * FROM inventory WHERE day_id = ?", (last_day['id'],))
+        cursor.execute("SELECT * FROM inventory WHERE day_id = %s;", (last_day['id'],))
         invs = cursor.fetchall()
 
         tot_rev, tot_cost, tot_profit, tot_stock_buy = 0, 0, 0, 0
@@ -162,9 +179,8 @@ if menu == "🏠 Tableau de bord":
         total_capital = tot_stock_buy + tot_rev + cash_avail
         net_sit = (cash_avail + tot_stock_buy) - debt_status
 
-        # Cartes métriques
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Recettes du jour (brutes)", f"{tot_rev:,.0f} FC")
+        c1.metric("Recettes du jour", f"{tot_rev:,.0f} FC")
         c2.metric("Disponible Caisse/SIMs", f"{cash_avail:,.0f} FC")
         c3.metric("Valeur Stock Restant", f"{tot_stock_buy:,.0f} FC")
         c4.metric("Bénéfice Brut", f"{tot_profit:,.0f} FC")
@@ -175,22 +191,21 @@ if menu == "🏠 Tableau de bord":
         c7.metric("Situation Nette", f"{net_sit:,.0f} FC")
         c8.metric("Dépenses Shop", f"{last_day['shop_expenses']:,.0f} FC")
 
-        st.caption("💡 *Total Capital de Roulement = Stock restant (prix d'achat) + Recettes brutes + Argent Caisse/SIMs*")
-
         st.subheader("Bilan par Réseau")
         st.dataframe(pd.DataFrame(net_rows), use_container_width=True)
 
+    cursor.close()
     conn.close()
 
 # ---------------------------------------------------------
-# 2. INVENTAIRE (CRÉATION ET MODIFICATION)
+# 2. INVENTAIRE
 # ---------------------------------------------------------
 elif menu == "📦 Inventaire":
     st.header("Saisie & Modification d'un Inventaire")
 
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT date FROM days ORDER BY date DESC")
+    cursor.execute("SELECT date FROM days ORDER BY date DESC;")
     dates_list = [row['date'] for row in cursor.fetchall()]
 
     mode = st.radio("Mode de saisie :", ["Nouvel inventaire", "Modifier un inventaire existant"], horizontal=True)
@@ -201,11 +216,11 @@ elif menu == "📦 Inventaire":
     if mode == "Modifier un inventaire existant":
         if dates_list:
             target_date_str = st.selectbox("Sélectionner la date à modifier :", dates_list)
-            cursor.execute("SELECT * FROM days WHERE date = ?", (target_date_str,))
+            cursor.execute("SELECT * FROM days WHERE date = %s;", (target_date_str,))
             day_data = cursor.fetchone()
             selected_date = datetime.datetime.strptime(day_data['date'], "%Y-%m-%d").date()
         else:
-            st.warning("Aucun inventaire disponible pour modification.")
+            st.warning("Aucun inventaire en base.")
 
     with st.form("inventory_form"):
         st.subheader("1. Informations Générales")
@@ -219,17 +234,16 @@ elif menu == "📦 Inventaire":
         new_debts = col_d2.number_input("Nouvelles Dettes", value=float(day_data['new_debts']) if day_data else 0.0)
         repayments = col_d3.number_input("Remboursements", value=float(day_data['repayments']) if day_data else 0.0)
 
-        obs = st.text_input("Observation / Notes", value=day_data['observation'] if day_data and day_data['observation'] else "")
+        obs = st.text_input("Observation", value=day_data['observation'] if day_data and day_data['observation'] else "")
 
         st.subheader("2. Stocks & Ventes par Réseau")
         net_inputs = {}
         for net_name in ["Airtel", "Vodacom", "Orange"]:
             st.markdown(f"**Réseau {net_name}**")
             
-            # Récupérer données existantes
             inv_net = None
             if day_data:
-                cursor.execute("SELECT * FROM inventory WHERE day_id = ? AND network_name = ?", (day_data['id'], net_name))
+                cursor.execute("SELECT * FROM inventory WHERE day_id = %s AND network_name = %s;", (day_data['id'], net_name))
                 inv_net = cursor.fetchone()
 
             c1, c2, c3, c4, c5 = st.columns(5)
@@ -248,28 +262,42 @@ elif menu == "📦 Inventaire":
         mpesa = c_mpesa.number_input("M-Pesa", value=float(day_data['mpesa']) if day_data else 0.0)
         orange_m = c_orange.number_input("Orange Money", value=float(day_data['orange_money']) if day_data else 0.0)
 
-        submit = st.form_submit_button("💾 Enregistrer l'inventaire")
+        submit = st.form_submit_button("💾 Enregistrer dans Supabase")
 
         if submit:
             date_str = str(inv_date)
-            cursor.execute("INSERT OR REPLACE INTO days (id, date, own_capital, initial_debt, new_debts, repayments, capital_additions, shop_expenses, cash, airtel_money, mpesa, orange_money, observation) VALUES ((SELECT id FROM days WHERE date = ?), ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)", 
-                           (date_str, date_str, own_cap, init_debt, new_debts, repayments, expenses, cash, airtel_m, mpesa, orange_m, obs))
+            cursor.execute("""
+                INSERT INTO days (date, own_capital, initial_debt, new_debts, repayments, capital_additions, shop_expenses, cash, airtel_money, mpesa, orange_money, observation)
+                VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date) DO UPDATE SET
+                    own_capital = EXCLUDED.own_capital,
+                    initial_debt = EXCLUDED.initial_debt,
+                    new_debts = EXCLUDED.new_debts,
+                    repayments = EXCLUDED.repayments,
+                    shop_expenses = EXCLUDED.shop_expenses,
+                    cash = EXCLUDED.cash,
+                    airtel_money = EXCLUDED.airtel_money,
+                    mpesa = EXCLUDED.mpesa,
+                    orange_money = EXCLUDED.orange_money,
+                    observation = EXCLUDED.observation;
+            """, (date_str, own_cap, init_debt, new_debts, repayments, expenses, cash, airtel_m, mpesa, orange_m, obs))
             
-            cursor.execute("SELECT id FROM days WHERE date = ?", (date_str,))
+            cursor.execute("SELECT id FROM days WHERE date = %s;", (date_str,))
             day_id = cursor.fetchone()['id']
 
-            cursor.execute("DELETE FROM inventory WHERE day_id = ?", (day_id,))
+            cursor.execute("DELETE FROM inventory WHERE day_id = %s;", (day_id,))
 
             for net_name, vals in net_inputs.items():
                 cursor.execute("""
                     INSERT INTO inventory (day_id, network_name, stock_initial, units_in, unit_buy_price, unit_sell_price, stock_final)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s);
                 """, (day_id, net_name, vals[0], vals[1], vals[2], vals[3], vals[4]))
 
             conn.commit()
-            st.success(f"Inventaire enregistré pour le {date_str} !")
+            st.success(f"Inventaire enregistré avec succès pour le {date_str} !")
             st.rerun()
 
+    cursor.close()
     conn.close()
 
 # ---------------------------------------------------------
@@ -289,16 +317,17 @@ elif menu == "💰 Transactions":
         if st.form_submit_button("➕ Ajouter la transaction"):
             conn = get_connection()
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO transactions (date, type, source_target, amount, note) VALUES (?, ?, ?, ?, ?)", 
+            cursor.execute("INSERT INTO transactions (date, type, source_target, amount, note) VALUES (%s, %s, %s, %s, %s);", 
                            (str(t_date), t_type, t_target, t_amount, t_note))
             conn.commit()
+            cursor.close()
             conn.close()
-            st.success("Transaction ajoutée !")
+            st.success("Transaction enregistrée !")
             st.rerun()
 
     st.subheader("Historique des Transactions")
     conn = get_connection()
-    df_trans = pd.read_sql_query("SELECT id, date, type, source_target AS Compte, amount AS 'Montant (FC)', note AS Note FROM transactions ORDER BY id DESC", conn)
+    df_trans = pd.read_sql_query("SELECT id, date, type, source_target AS Compte, amount AS \"Montant (FC)\", note AS Note FROM transactions ORDER BY id DESC;", conn)
     conn.close()
     st.dataframe(df_trans, use_container_width=True)
 
@@ -309,7 +338,7 @@ elif menu == "💳 Dettes":
     st.header("Gestion des Dettes & Remboursements")
 
     conn = get_connection()
-    df_debts = pd.read_sql_query("SELECT id, date, type, amount AS 'Montant (FC)', note AS Note FROM debts ORDER BY id DESC", conn)
+    df_debts = pd.read_sql_query("SELECT id, date, type, amount AS \"Montant (FC)\", note AS Note FROM debts ORDER BY id DESC;", conn)
     conn.close()
 
     col_form, col_table = st.columns([1, 2])
@@ -337,14 +366,15 @@ elif menu == "💳 Dettes":
                 conn = get_connection()
                 cursor = conn.cursor()
                 if debt_id_to_edit > 0:
-                    cursor.execute("UPDATE debts SET date = ?, type = ?, amount = ?, note = ? WHERE id = ?", 
+                    cursor.execute("UPDATE debts SET date = %s, type = %s, amount = %s, note = %s WHERE id = %s;", 
                                    (str(d_date), d_type, d_amount, d_note, debt_id_to_edit))
                     st.success("Dette mise à jour !")
                 else:
-                    cursor.execute("INSERT INTO debts (date, type, amount, note) VALUES (?, ?, ?, ?)", 
+                    cursor.execute("INSERT INTO debts (date, type, amount, note) VALUES (%s, %s, %s, %s);", 
                                    (str(d_date), d_type, d_amount, d_note))
                     st.success("Dette enregistrée !")
                 conn.commit()
+                cursor.close()
                 conn.close()
                 st.rerun()
 
@@ -359,17 +389,16 @@ elif menu == "📊 Historique & Export":
     st.header("Historique Global & Graphiques")
 
     conn = get_connection()
-    df_days = pd.read_sql_query("SELECT * FROM days ORDER BY date ASC", conn)
+    df_days = pd.read_sql_query("SELECT * FROM days ORDER BY date ASC;", conn)
     conn.close()
 
     if not df_days.empty:
-        st.subheader("Graphique d'évolution des ventes")
+        st.subheader("Graphique des Espèces & Capital")
         st.line_chart(df_days.set_index("date")[["cash", "own_capital", "shop_expenses"]])
 
-        st.subheader("Données consolidées")
+        st.subheader("Données Consolidées")
         st.dataframe(df_days, use_container_width=True)
 
-        # Export Excel
         csv_data = df_days.to_csv(index=False).encode('utf-8')
         st.download_button("📝 Télécharger l'historique en CSV", csv_data, "historique_shop.csv", "text/csv")
 
@@ -381,7 +410,7 @@ elif menu == "⚙️ Paramètres":
 
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM settings")
+    cursor.execute("SELECT * FROM settings;")
     settings = {row['key']: row['value'] for row in cursor.fetchall()}
 
     with st.form("settings_form"):
@@ -393,9 +422,11 @@ elif menu == "⚙️ Paramètres":
             if abs((s + r + a) - 100.0) > 0.001:
                 st.error("La somme des pourcentages doit être égale à 100%.")
             else:
-                cursor.execute("UPDATE settings SET value = ? WHERE key = 'pct_savings'", (s,))
-                cursor.execute("UPDATE settings SET value = ? WHERE key = 'pct_reinvest'", (r,))
-                cursor.execute("UPDATE settings SET value = ? WHERE key = 'pct_allowance'", (a,))
+                cursor.execute("UPDATE settings SET value = %s WHERE key = 'pct_savings';", (s,))
+                cursor.execute("UPDATE settings SET value = %s WHERE key = 'pct_reinvest';", (r,))
+                cursor.execute("UPDATE settings SET value = %s WHERE key = 'pct_allowance';", (a,))
                 conn.commit()
-                st.success("Paramètres sauvegardés !")
+                st.success("Paramètres sauvegardés sur Supabase !")
+    
+    cursor.close()
     conn.close()
