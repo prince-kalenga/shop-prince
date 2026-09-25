@@ -396,8 +396,8 @@ elif menu == "💳 Dettes":
         st.subheader("Historique des Dettes")
         st.dataframe(df_debts, use_container_width=True)
 
-# ---------------------------------------------------------
-# 5. HISTORIQUE & EXPORT (NETTOYÉ ET CORRIGÉ)
+# # ---------------------------------------------------------
+# 5. HISTORIQUE & EXPORT
 # ---------------------------------------------------------
 elif menu == "📊 Historique & Export":
     st.header("Historique Global & Graphiques")
@@ -407,36 +407,34 @@ elif menu == "📊 Historique & Export":
     conn.close()
 
     if not df_days.empty:
-        # Filtrer pour retirer d'éventuelles lignes d'en-tête parasites ("id", "date")
-        df_days = df_days[df_days['date'] != 'date'].copy()
-
-        # Liste des colonnes financières
+        # Nettoyage des colonnes numériques
         numeric_cols = ['own_capital', 'initial_debt', 'new_debts', 'repayments', 
                         'capital_additions', 'shop_expenses', 'cash', 'airtel_money', 'mpesa', 'orange_money']
 
-        # Conversion forcée en nombres (float)
         for col in numeric_cols:
             if col in df_days.columns:
                 df_days[col] = pd.to_numeric(df_days[col], errors='coerce').fillna(0.0)
 
-        # Graphique
+        # Graphique des Espèces & Capital
         st.subheader("Graphique des Espèces & Capital")
-        chart_data = df_days.set_index("date")[["cash", "own_capital", "shop_expenses"]]
-        st.line_chart(chart_data)
+        if len(df_days) > 0:
+            chart_data = df_days.set_index("date")[["cash", "own_capital", "shop_expenses"]]
+            st.line_chart(chart_data)
 
-        # Tableau propre
+        # Affichage du tableau de données
         st.subheader("Données Consolidées")
         formatted_df = df_days.copy()
         for col in numeric_cols:
-            formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:,.0f} FC")
+            if col in formatted_df.columns:
+                formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:,.0f} FC")
 
         st.dataframe(formatted_df, use_container_width=True)
 
-        # Bouton d'exportation CSV
+        # Téléchargement CSV
         csv_data = df_days.to_csv(index=False).encode('utf-8')
         st.download_button("📝 Télécharger l'historique en CSV", csv_data, "historique_shop.csv", "text/csv")
     else:
-        st.info("Aucune donnée disponible dans l'historique.")
+        st.info("Aucune donnée enregistrée dans la base pour le moment.")
 
 # ---------------------------------------------------------
 # 6. PARAMÈTRES
