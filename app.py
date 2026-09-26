@@ -1,4 +1,4 @@
-# app.py
+# app.py / main.py
 """
 Application Web de Gestion de Shop PRINCE
 Framework: Streamlit
@@ -147,12 +147,18 @@ if menu == "🏠 Tableau de bord":
 
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM days ORDER BY date DESC LIMIT 1;")
-    last_day = cursor.fetchone()
+    
+    # Récupérer toutes les journées triées par date
+    cursor.execute("SELECT * FROM days ORDER BY date ASC;")
+    all_days = cursor.fetchall()
 
-    if not last_day:
+    if not all_days:
         st.info("Aucune donnée enregistrée dans Supabase. Rendez-vous dans 'Inventaire' pour créer la première entrée.")
     else:
+        # Journée la plus récente
+        last_day = all_days[-1]
+        
+        # Récupérer l'inventaire de la journée la plus récente
         cursor.execute("SELECT * FROM inventory WHERE day_id = %s;", (last_day['id'],))
         invs = cursor.fetchall()
 
@@ -180,24 +186,66 @@ if menu == "🏠 Tableau de bord":
                 "Stock Restant": f"{s_final:,.0f}"
             })
 
+        # Liquidités actuelles
         cash_avail = float(last_day['cash'] or 0) + float(last_day['airtel_money'] or 0) + float(last_day['mpesa'] or 0) + float(last_day['orange_money'] or 0)
-        debt_status = (float(last_day['initial_debt'] or 0) + float(last_day['new_debts'] or 0)) - float(last_day['repayments'] or 0)
-        total_capital = tot_stock_buy + tot_rev + cash_avail
-        net_sit = (cash_avail + tot_stock_buy) - debt_status
+        
+        # Capital Économique actuel (Stock restant + Cash disponible)
+        capital_actuel_total = tot_stock_buy + cash_avail
+
+        # CALCUL DU BÉNÉFICE D'HIER ET AUJOURD'HUI (Pour les 75%)
+        profit_today = tot_profit
+        profit_yesterday = 0.0
+
+        if len(all_days) >= 2:
+            prev_day = all_days[-2]
+            cursor.execute("SELECT * FROM inventory WHERE day_id = %s;", (prev_day['id'],))
+            prev_invs = cursor.fetchall()
+            for inv in prev_invs:
+                s_init = float(inv['stock_initial'] or 0)
+                u_in = float(inv['units_in'] or 0)
+                p_buy = float(inv['unit_buy_price'] or 0)
+                p_sell = float(inv['unit_sell_price'] or 0)
+                s_final = float(inv['stock_final'] or 0)
+                res = calc_network(s_init, u_in, p_buy, p_sell, s_final)
+                profit_yesterday += res['profit']
+
+        # Cumul 75% (Épargne 50% + Réinvestissement 25%) d'hier + aujourd'hui
+        cumul_75_pct = (profit_yesterday * 0.75) + (profit_today * 0.75)
+
+        # Capital Actuel BRUT (sans aucun bénéfice cumulé) pour comparaison avec le capital de départ (225 000 FC)
+        capital_actuel_sans_benefice = capital_actuel_total - (profit_today + profit_yesterday)
+
+        # Calcul de progression par rapport au Capital de Départ (225 000 FC)
+        CAPITAL_DEPART = 225000.0
+        progression = capital_actuel_sans_benefice - CAPITAL_DEPART
+
+        # Affichage des indicateurs principaux
+        st.subheader("📊 Comparaison du Capital & Bénéfices")
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Recettes du jour", f"{tot_rev:,.0f} FC")
-        c2.metric("Disponible Caisse/SIMs", f"{cash_avail:,.0f} FC")
-        c3.metric("Valeur Stock Restant", f"{tot_stock_buy:,.0f} FC")
-        c4.metric("Bénéfice Brut", f"{tot_profit:,.0f} FC")
+        c1.metric("Capital de Départ", f"{CAPITAL_DEPART:,.0f} FC")
+        c2.metric("Capital Actuel (sans bénéfice)", f"{capital_actuel_sans_benefice:,.0f} FC", delta=f"{progression:,.0f} FC")
+        c3.metric("Bénéfice du jour (100%)", f"{profit_today:,.0f} FC")
+        c4.metric("Cumul 75% Bénéfice (Hier + Aujourd'hui)", f"{cumul_75_pct:,.0f} FC")
 
+        st.divider()
+
+        # Détails des liquidités et stocks
         c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Total Capital Roulement", f"{total_capital:,.0f} FC")
-        c6.metric("Dette Restante", f"{debt_status:,.0f} FC")
-        c7.metric("Situation Nette", f"{net_sit:,.0f} FC")
-        c8.metric("Dépenses Shop", f"{float(last_day['shop_expenses'] or 0):,.0f} FC")
+        c5.metric("Recettes brutes du jour", f"{tot_rev:,.0f} FC")
+        c6.metric("Disponible Caisse / SIMs", f"{cash_avail:,.0f} FC")
+        c7.metric("Valeur Stock Restant", f"{tot_stock_buy:,.0f} FC")
+        
+        debt_status = (float(last_day['initial_debt'] or 0) + float(last_day['new_debts'] or 0)) - float(last_day['repayments'] or 0)
+        c8.metric("Dette Restante", f"{debt_status:,.0f} FC")
 
-        st.subheader("Bilan par Réseau")
+        # Détail de la formule des 75%
+        with st.expander("ℹ️ Détail des 75% de bénéfice (Hier + Aujourd'hui)"):
+            st.write(f"- **75% du Bénéfice d'hier** ({profit_yesterday:,.0f} FC × 75%) = **{profit_yesterday * 0.75:,.0f} FC**")
+            st.write(f"- **75% du Bénéfice d'aujourd'hui** ({profit_today:,.0f} FC × 75%) = **{profit_today * 0.75:,.0f} FC**")
+            st.write(f"👉 **Total 75% conservé (Épargne + Réinvestissement) = {cumul_75_pct:,.0f} FC**")
+
+        st.subheader("Bilan par Réseau du Jour")
         st.dataframe(pd.DataFrame(net_rows), use_container_width=True)
 
     cursor.close()
@@ -396,7 +444,7 @@ elif menu == "💳 Dettes":
         st.subheader("Historique des Dettes")
         st.dataframe(df_debts, use_container_width=True)
 
-# # ---------------------------------------------------------
+# ---------------------------------------------------------
 # 5. HISTORIQUE & EXPORT
 # ---------------------------------------------------------
 elif menu == "📊 Historique & Export":
@@ -407,7 +455,6 @@ elif menu == "📊 Historique & Export":
     conn.close()
 
     if not df_days.empty:
-        # Nettoyage des colonnes numériques
         numeric_cols = ['own_capital', 'initial_debt', 'new_debts', 'repayments', 
                         'capital_additions', 'shop_expenses', 'cash', 'airtel_money', 'mpesa', 'orange_money']
 
@@ -415,13 +462,11 @@ elif menu == "📊 Historique & Export":
             if col in df_days.columns:
                 df_days[col] = pd.to_numeric(df_days[col], errors='coerce').fillna(0.0)
 
-        # Graphique des Espèces & Capital
         st.subheader("Graphique des Espèces & Capital")
         if len(df_days) > 0:
             chart_data = df_days.set_index("date")[["cash", "own_capital", "shop_expenses"]]
             st.line_chart(chart_data)
 
-        # Affichage du tableau de données
         st.subheader("Données Consolidées")
         formatted_df = df_days.copy()
         for col in numeric_cols:
@@ -430,7 +475,6 @@ elif menu == "📊 Historique & Export":
 
         st.dataframe(formatted_df, use_container_width=True)
 
-        # Téléchargement CSV
         csv_data = df_days.to_csv(index=False).encode('utf-8')
         st.download_button("📝 Télécharger l'historique en CSV", csv_data, "historique_shop.csv", "text/csv")
     else:
